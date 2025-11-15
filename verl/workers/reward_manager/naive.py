@@ -14,7 +14,7 @@
 
 from collections import defaultdict
 from typing import Any
-
+from transformers import pipeline
 import torch
 
 from verl import DataProto
@@ -45,7 +45,7 @@ class NaiveRewardManager(AbstractRewardManager):
 
 
     def __call__(self, data: DataProto, return_dict: bool = False) -> torch.Tensor | dict[str, Any]:
-        """We will expand this function gradually based on the available datasets"""
+        """(已修改) 使用批量推理计算奖励，并保留日志记录。"""
 
         # If there is rm score, we directly return rm score. Otherwise, we compute via rm_score_fn
         if "rm_scores" in data.batch.keys():
@@ -58,66 +58,73 @@ class NaiveRewardManager(AbstractRewardManager):
 
         reward_tensor = torch.zeros_like(data.batch["responses"], dtype=torch.float32)
         reward_extra_info = defaultdict(list)
-
         already_print_data_sources = {}
+        
+        all_full_text = [] # 存储发送给 API 的文本
+        metadata_list = [] # 存储日志和 Bug 修复所需的信息
 
+        # --- 阶段 1: 收集所有数据 ---
         for i in range(len(data)):
-            data_item = data[i]  # DataProtoItem
-
+            data_item = data[i]
+            
+            # 解码 Prompt (日志需要)
             prompt_ids = data_item.batch["prompts"]
-
             prompt_length = prompt_ids.shape[-1]
-
             valid_prompt_length = data_item.batch["attention_mask"][:prompt_length].sum()
             valid_prompt_ids = prompt_ids[-valid_prompt_length:]
+            prompt_str = self.tokenizer.decode(valid_prompt_ids, skip_special_tokens=True)
 
+            # 解码 Response (日志 & Bug修复 需要)
             response_ids = data_item.batch["responses"]
             valid_response_length = data_item.batch["attention_mask"][prompt_length:].sum()
             valid_response_ids = response_ids[:valid_response_length]
-
-            # decode
-            prompt_str = self.tokenizer.decode(valid_prompt_ids, skip_special_tokens=True)
             response_str = self.tokenizer.decode(valid_response_ids, skip_special_tokens=True)
-            full_text = prompt_str + response_str
 
+            # 获取日志所需信息
             ground_truth = data_item.non_tensor_batch["reward_model"]["ground_truth"]
             data_source = data_item.non_tensor_batch[self.reward_fn_key]
-            extra_info = data_item.non_tensor_batch.get("extra_info", {})
-            num_turns = data_item.non_tensor_batch.get("__num_turns__", None)
-            rollout_reward_scores = data_item.non_tensor_batch.get("reward_scores", {})
-            extra_info["num_turns"] = num_turns
-            extra_info["rollout_reward_scores"] = rollout_reward_scores
 
-            score = self.compute_score(
-                data_source=data_source,
-                solution_str=full_text,
-                ground_truth=ground_truth,
-                extra_info=extra_info,
-            )
+            # 准备待打分的文本 (这里假设您想评估 prompt + response)
+            # (如果您想使用 'original_text'，请确保它在所有数据中都存在)
+            full_text = prompt_str + " " + response_str
+            all_full_text.append(full_text)
+            
+            # 存储元数据
+            metadata_list.append({
+                "valid_response_length": valid_response_length, # <-- 修复 Bug
+                "prompt_str": prompt_str,
+                "response_str": response_str,
+                "ground_truth": ground_truth,
+                "data_source": data_source
+            })
 
-            if isinstance(score, dict):
-                reward = score["score"]
-                # Store the information including original reward
-                for key, value in score.items():
-                    reward_extra_info[key].append(value)
-            else:
-                reward = score
+        # --- 阶段 2: 批量推理 ---
+        # 假设 self.compute_score 现在返回一个浮点数列表
+        scores = self.compute_score(all_full_text)
+        assert len(scores) == len(data), "API 返回的分数数量与批次大小不匹配"
 
-            reward_tensor[i, valid_response_length - 1] = reward
+        # --- 阶段 3: 分配分数和打印日志 ---
+        for i in range(len(scores)):
+            reward = scores[i]
+            meta = metadata_list[i] # 获取第 i 项的元数据
+            
+            # BUG 修复: 使用与分数[i]对应的元数据中的长度
+            reward_tensor[i, meta["valid_response_length"] - 1] = reward
 
+            # 填充日志信息
+            reward_extra_info["score"].append(reward)
+
+            # 恢复日志打印逻辑
+            data_source = meta["data_source"]
             if data_source not in already_print_data_sources:
                 already_print_data_sources[data_source] = 0
 
             if already_print_data_sources[data_source] < self.num_examine:
                 already_print_data_sources[data_source] += 1
-                print("[prompt]", prompt_str)
-                print("[response]", response_str)
-                print("[ground_truth]", ground_truth)
-                if isinstance(score, dict):
-                    for key, value in score.items():
-                        print(f"[{key}]", value)
-                else:
-                    print("[score]", score)
+                print("[prompt]", meta["prompt_str"])
+                print("[response]", meta["response_str"])
+                print("[ground_truth]", meta["ground_truth"])
+                print("[score]", reward) # 简化版日志，因为 score 现在只是一个 float
 
         if return_dict:
             return {

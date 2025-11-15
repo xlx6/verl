@@ -13,7 +13,7 @@ n_gpus_per_node: 0
 nnodes: 0
 
 # FSDP strategy: "fsdp" or "fsdp2"
-strategy: ???
+strategy: fsdp2
 
 # model config for reward scoring
 model:
@@ -36,7 +36,7 @@ model:
 
 # [Deprecated] Global micro batch size
 # will be deprecated, use micro_batch_size_per_gpu
-micro_batch_size: null
+micro_batch_size: 16
 
 # Local per-GPU micro batch size
 micro_batch_size_per_gpu: null
