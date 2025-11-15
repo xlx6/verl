@@ -43,7 +43,6 @@ class NaiveRewardManager(AbstractRewardManager):
         self.compute_score = compute_score or default_compute_score
         self.reward_fn_key = reward_fn_key  # Store the key for accessing the data source
 
-
     def __call__(self, data: DataProto, return_dict: bool = False) -> torch.Tensor | dict[str, Any]:
         """We will expand this function gradually based on the available datasets"""
 
@@ -78,7 +77,6 @@ class NaiveRewardManager(AbstractRewardManager):
             # decode
             prompt_str = self.tokenizer.decode(valid_prompt_ids, skip_special_tokens=True)
             response_str = self.tokenizer.decode(valid_response_ids, skip_special_tokens=True)
-            full_text = prompt_str + response_str
 
             ground_truth = data_item.non_tensor_batch["reward_model"]["ground_truth"]
             data_source = data_item.non_tensor_batch[self.reward_fn_key]
@@ -90,7 +88,7 @@ class NaiveRewardManager(AbstractRewardManager):
 
             score = self.compute_score(
                 data_source=data_source,
-                solution_str=full_text,
+                solution_str=response_str,
                 ground_truth=ground_truth,
                 extra_info=extra_info,
             )
