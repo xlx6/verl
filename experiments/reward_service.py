@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 from transformers import pipeline
 import torch
 
-MODEL_PATH = "/home/xinglixian/models/distilbert-imdb"
+MODEL_PATH = "/home/xinglixian/models/sentiment-roberta-large-english-3-classes"
 sentiment_pipe = None
 
 
@@ -18,6 +18,27 @@ class ScoreResponse(BaseModel):
     score: List[float]
 
 app = FastAPI()
+
+def repetition_penalty(texts, n=3):
+    def get_repetition_penalty(text, n):
+        words = text.split()
+        if len(words) < 10:
+            return 0.0
+
+        ngrams = set()
+        duplicates = 0
+        for i in range(len(words) - n + 1):
+            gram = " ".join(words[i:i+n])
+            if gram in ngrams:
+                duplicates += 1
+            ngrams.add(gram)
+
+        return duplicates / (len(words) - n + 1)
+    penalty = []
+    for text in texts:
+        penalty.append(get_repetition_penalty(text, n))
+    return penalty
+
 
 @app.on_event("startup")
 def load_model():
@@ -31,7 +52,7 @@ def load_model():
             model=MODEL_PATH,
             tokenizer=MODEL_PATH,
             device=device,
-            top_k=None,
+            top_k=3,
             truncation=True,
             max_length=512
         )
@@ -61,11 +82,15 @@ async def get_score(request: ScoreRequest):
         for results in results_list:
             reward_score = 0.0
             for item in results:
-                if item['label'] == 'NEGATIVE':
+                if item['label'] == 'negative':
                     reward_score = item['score']
                     break
             scores_list.append(float(reward_score))
         print(f'return scores len: {len(scores_list)}')
+        print(scores_list[:20])
+        gram2 = repetition_penalty(texts_to_score, n=2)
+        gram3 = repetition_penalty(texts_to_score, n=3)
+        scores_list = [score - gram2[i] - gram3[i] for i,score in enumerate(scores_list)]
         return ScoreResponse(
             score=scores_list
         )

@@ -1,21 +1,11 @@
 # Copyright 2024 Bytedance Ltd. and/or its affiliates
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# (License header as in original file)
 
 from collections import defaultdict
 from typing import Any
 from transformers import pipeline
 import torch
+import numpy as np # <-- 1. 导入 numpy
 
 from verl import DataProto
 from verl.utils.reward_score import default_compute_score
@@ -25,29 +15,23 @@ from verl.workers.reward_manager.abstract import AbstractRewardManager
 
 @register("naive")
 class NaiveRewardManager(AbstractRewardManager):
-    """The reward manager."""
+    """(已修改) The reward manager."""
 
     def __init__(self, tokenizer, num_examine, compute_score=None, reward_fn_key="data_source") -> None:
         """
         Initialize the NaiveRewardManager instance.
-
-        Args:
-            tokenizer: The tokenizer used to decode token IDs into text.
-            num_examine: The number of batches of decoded responses to print to the console for debugging purpose.
-            compute_score: A function to compute the reward score. If None, `default_compute_score` will be used.
-            reward_fn_key: The key used to access the data source in the non-tensor batch data. Defaults to
-                "data_source".
+        (Init logic as in original file)
         """
-        self.tokenizer = tokenizer  # Store the tokenizer for decoding token IDs
-        self.num_examine = num_examine  # the number of batches of decoded responses to print to the console
+        self.tokenizer = tokenizer  
+        self.num_examine = num_examine
         self.compute_score = compute_score or default_compute_score
-        self.reward_fn_key = reward_fn_key  # Store the key for accessing the data source
+        self.reward_fn_key = reward_fn_key
 
 
     def __call__(self, data: DataProto, return_dict: bool = False) -> torch.Tensor | dict[str, Any]:
-        """(已修改) 使用批量推理计算奖励，并保留日志记录。"""
+        """(已修改) 使用批量推理计算奖励，并按前缀情感分类记录日志。"""
 
-        # If there is rm score, we directly return rm score. Otherwise, we compute via rm_score_fn
+        # If there is rm score, we directly return rm score. (Logic as in original file)
         if "rm_scores" in data.batch.keys():
             if return_dict:
                 reward_extra_keys = data.meta_info.get("reward_extra_keys", [])
@@ -60,38 +44,40 @@ class NaiveRewardManager(AbstractRewardManager):
         reward_extra_info = defaultdict(list)
         already_print_data_sources = {}
         
-        all_full_text = [] # 存储发送给 API 的文本
-        metadata_list = [] # 存储日志和 Bug 修复所需的信息
+        all_full_text = [] 
+        metadata_list = [] 
 
-        # --- 阶段 1: 收集所有数据 ---
+        # --- 阶段 1: 收集所有数据 (修复 Bug) ---
         for i in range(len(data)):
             data_item = data[i]
             
-            # 解码 Prompt (日志需要)
             prompt_ids = data_item.batch["prompts"]
             prompt_length = prompt_ids.shape[-1]
             valid_prompt_length = data_item.batch["attention_mask"][:prompt_length].sum()
             valid_prompt_ids = prompt_ids[-valid_prompt_length:]
             prompt_str = self.tokenizer.decode(valid_prompt_ids, skip_special_tokens=True)
 
-            # 解码 Response (日志 & Bug修复 需要)
             response_ids = data_item.batch["responses"]
             valid_response_length = data_item.batch["attention_mask"][prompt_length:].sum()
             valid_response_ids = response_ids[:valid_response_length]
             response_str = self.tokenizer.decode(valid_response_ids, skip_special_tokens=True)
 
-            # 获取日志所需信息
+            extra_info = data_item.non_tensor_batch.get("extra_info", {})
             ground_truth = data_item.non_tensor_batch["reward_model"]["ground_truth"]
             data_source = data_item.non_tensor_batch[self.reward_fn_key]
 
-            # 准备待打分的文本 (这里假设您想评估 prompt + response)
-            # (如果您想使用 'original_text'，请确保它在所有数据中都存在)
+            # (新功能) 获取在数据处理时存入的 'prefix_sentiment_label'
+            # (来自 imdb_continuewrite.py)
+            prefix_label = extra_info.get("prefix_sentiment_label", -1) # 0, 1, 2, or -1 (Unknown)
+
+            # 拼接 full_text
             full_text = prompt_str + " " + response_str
             all_full_text.append(full_text)
             
-            # 存储元数据
+            # 存储所有需要在第二阶段使用的信息
             metadata_list.append({
-                "valid_response_length": valid_response_length, # <-- 修复 Bug
+                "valid_response_length": valid_response_length, 
+                "prefix_label": prefix_label,                   
                 "prompt_str": prompt_str,
                 "response_str": response_str,
                 "ground_truth": ground_truth,
@@ -99,22 +85,40 @@ class NaiveRewardManager(AbstractRewardManager):
             })
 
         # --- 阶段 2: 批量推理 ---
-        # 假设 self.compute_score 现在返回一个浮点数列表
-        scores = self.compute_score(all_full_text)
+        scores = self.compute_score(all_full_text) # 假设返回 List[float]
         assert len(scores) == len(data), "API 返回的分数数量与批次大小不匹配"
 
-        # --- 阶段 3: 分配分数和打印日志 ---
+        # --- 阶段 3: 分配分数和分类日志 ---
+        label_to_name_map = {0: "Negative", 1: "Neutral", 2: "Positive", -1: "Unknown"}
+
         for i in range(len(scores)):
-            reward = scores[i]
-            meta = metadata_list[i] # 获取第 i 项的元数据
+            score = scores[i]
+            meta = metadata_list[i] 
             
-            # BUG 修复: 使用与分数[i]对应的元数据中的长度
-            reward_tensor[i, meta["valid_response_length"] - 1] = reward
+            # BUG 修复: 使用与 scores[i] 对应的元数据中的长度
+            reward_tensor[i, meta["valid_response_length"] - 1] = score
 
-            # 填充日志信息
-            reward_extra_info["score"].append(reward)
-
-            # 恢复日志打印逻辑
+            # --- (新功能) Assert 修复：填充所有列表以保持长度一致 ---
+            
+            # 1. 填充 "score" (verl 会自动记录为 .../score/mean)
+            reward_extra_info["score"].append(score) 
+            
+            # 2. 获取当前项的标签
+            current_prefix_label_int = meta["prefix_label"]
+            current_prefix_label_name = label_to_name_map.get(current_prefix_label_int, "Unknown")
+            
+            # 3. 遍历 *所有* 可能的标签，要么填 score, 要么填 nan
+            for label_name in label_to_name_map.values():
+                key = f"score_prefix_{label_name}"
+                
+                if label_name == current_prefix_label_name:
+                    # 这是正确的类别，添加分数
+                    reward_extra_info[key].append(score)
+                else:
+                    # 这不是正确的类别，添加 nan 来占位
+                    reward_extra_info[key].append(np.nan)
+            
+            # --- 恢复日志打印逻辑 ---
             data_source = meta["data_source"]
             if data_source not in already_print_data_sources:
                 already_print_data_sources[data_source] = 0
@@ -124,8 +128,11 @@ class NaiveRewardManager(AbstractRewardManager):
                 print("[prompt]", meta["prompt_str"])
                 print("[response]", meta["response_str"])
                 print("[ground_truth]", meta["ground_truth"])
-                print("[score]", reward) # 简化版日志，因为 score 现在只是一个 float
-
+                print(f"[score] (prefix: {current_prefix_label_name})", score) 
+        print('='*100)
+        for label_name in label_to_name_map.values():
+            key = f"score_prefix_{label_name}"
+            print(reward_extra_info[key])
         if return_dict:
             return {
                 "reward_tensor": reward_tensor,

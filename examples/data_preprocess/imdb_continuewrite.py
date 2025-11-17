@@ -72,7 +72,7 @@ if __name__ == "__main__":
             words = clean_text.split()
             
             # 如果文本太短，就直接用全部（虽然很少见）
-            prefix_len = random.randint(10, 20)
+            prefix_len = random.randint(4, 6)
             if len(words) > prefix_len:
                 prompt_text = " ".join(words[:prefix_len])
             else:
@@ -122,8 +122,8 @@ if __name__ == "__main__":
     # 确保目录存在
     os.makedirs(local_save_dir, exist_ok=True)
 
-    train_dataset.to_parquet(os.path.join(local_save_dir, "train.parquet"))
-    test_dataset.to_parquet(os.path.join(local_save_dir, "test.parquet"))
+    train_dataset.to_parquet(os.path.join(local_save_dir, "instruction_train.parquet"))
+    test_dataset.to_parquet(os.path.join(local_save_dir, "instruction_test.parquet"))
 
     if hdfs_dir is not None:
         makedirs(hdfs_dir)
