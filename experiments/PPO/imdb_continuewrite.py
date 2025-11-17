@@ -63,23 +63,15 @@ if __name__ == "__main__":
             raw_text = example.pop("text")
             label = example.pop("label") # 0 for neg, 1 for pos
 
-            # 清洗 HTML 标签
             clean_text = raw_text.replace("<br />", " ")
-
-            # --- 核心修改：构建 Prompt ---
-            # 策略：取评论的前 10 到 20 个单词作为 Prompt，让模型续写剩余部分
-            # 注意：这里为了演示简单，固定取前 16 个单词。实际场景可以随机长度。
             words = clean_text.split()
             
-            # 如果文本太短，就直接用全部（虽然很少见）
             prefix_len = random.randint(4, 6)
             if len(words) > prefix_len:
                 prompt_text = " ".join(words[:prefix_len])
             else:
                 prompt_text = clean_text
 
-            # 拼接 Instruction 和截断后的 Prompt
-            # 格式： Instruction + \n + Prompt Text
             content = instruction_following + "\n\nReview start: " + prompt_text
 
             data = {
@@ -91,9 +83,6 @@ if __name__ == "__main__":
                     }
                 ],
                 "ability": "creative_writing",
-                # 这里的 reward_model 字段主要用于记录元数据
-                # 对于 IMDB，我们通常使用一个训练好的 Reward Model (Classifier)
-                # ground_truth 这里存原始 label (1是正面)，虽然 PPO 生成时不直接用它，但对分析有用
                 "reward_model": {
                     "style": "model", 
                     "ground_truth": label
