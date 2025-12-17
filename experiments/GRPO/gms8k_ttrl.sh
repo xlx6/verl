@@ -1,6 +1,5 @@
 set -x
 MODEL_PATH=$HOME/models/Qwen2.5-1.5B-Instruct
-export WANDB_API_KEY=30aeb9d20707f9f2e58fb4bdff330361304cdc45
 
 python3 -m verl.trainer.main_ppo \
     algorithm.adv_estimator=grpo \
